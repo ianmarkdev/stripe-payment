@@ -24,26 +24,28 @@ class ModelRelationshipsTest extends TestCase
 
     private function createPayment(Order $order, array $attributes = []): Payment
     {
-        return $order->payment()->create(array_merge([
+        return $order->payments()->create(array_merge([
             'stripe_session_id' => 'cs_test_'.uniqid(),
             'amount' => $order->price,
         ], $attributes));
     }
 
-    public function test_order_has_one_payment()
+    public function test_order_has_many_payment_attempts()
     {
         $order = $this->createOrder();
-        $payment = $this->createPayment($order);
+        $expired = $this->createPayment($order, ['status' => 'expired']);
+        $retry = $this->createPayment($order);
 
-        $this->assertInstanceOf(Payment::class, $order->payment);
-        $this->assertTrue($order->payment->is($payment));
+        $this->assertCount(2, $order->payments);
+        $this->assertTrue($order->payments->contains($expired));
+        $this->assertTrue($order->payments->contains($retry));
     }
 
-    public function test_order_without_payment_returns_null()
+    public function test_order_without_payments_returns_empty_collection()
     {
         $order = $this->createOrder();
 
-        $this->assertNull($order->payment);
+        $this->assertTrue($order->payments->isEmpty());
     }
 
     public function test_payment_belongs_to_order()
@@ -55,23 +57,25 @@ class ModelRelationshipsTest extends TestCase
         $this->assertTrue($payment->order->is($order));
     }
 
-    public function test_order_cannot_have_a_second_payment()
+    public function test_payment_attempts_cannot_share_a_stripe_session_id()
     {
         $order = $this->createOrder();
-        $this->createPayment($order);
+        $this->createPayment($order, ['stripe_session_id' => 'cs_test_dup']);
 
         $this->expectException(QueryException::class);
 
-        $this->createPayment($order);
+        $this->createPayment($order, ['stripe_session_id' => 'cs_test_dup']);
     }
 
-    public function test_deleting_order_cascades_to_payment()
+    public function test_deleting_order_cascades_to_payments()
     {
         $order = $this->createOrder();
-        $payment = $this->createPayment($order);
+        $first = $this->createPayment($order, ['status' => 'expired']);
+        $second = $this->createPayment($order);
 
         $order->delete();
 
-        $this->assertModelMissing($payment);
+        $this->assertModelMissing($first);
+        $this->assertModelMissing($second);
     }
 }

@@ -16,7 +16,7 @@ return new class extends Migration
             $table->string('stripe_event_id')->unique(); // blocks duplicate Stripe events
             $table->timestamp('received_at');
             $table->json('payload');
-            $table->string('status')->default('pending'); // pending | processed | failed
+            $table->string('status')->default('received'); // received | processed | ignored | failed
             $table->timestamps();
         });
     }

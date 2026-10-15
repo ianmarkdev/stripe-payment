@@ -14,7 +14,7 @@ return new class extends Migration
         Schema::create('orders', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->string('order_number')->unique();
-            $table->string('status')->default('pending');
+            $table->string('status')->default('awaiting_payment'); // awaiting_payment | paid | cancelled
             $table->unsignedBigInteger('price'); // minor units (cents)
             $table->string('cart_id')->index();
             $table->json('line_items');

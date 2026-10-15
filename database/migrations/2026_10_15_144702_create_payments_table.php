@@ -13,10 +13,10 @@ return new class extends Migration
     {
         Schema::create('payments', function (Blueprint $table) {
             $table->uuid('id')->primary();
-            $table->foreignUuid('order_id')->unique()->constrained()->cascadeOnDelete();
-            $table->string('stripe_session_id')->unique();
+            $table->foreignUuid('order_id')->constrained()->cascadeOnDelete();
+            $table->string('stripe_session_id')->unique(); // one row per Checkout Session attempt
             $table->string('stripe_payment_intent_id')->nullable()->unique();
-            $table->string('status')->default('pending'); // pending | succeeded | failed
+            $table->string('status')->default('pending'); // pending | succeeded | failed | expired
             $table->unsignedBigInteger('amount'); // minor units
             $table->timestamps();
         });
