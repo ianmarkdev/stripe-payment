@@ -17,8 +17,8 @@ return new class extends Migration
             $table->string('status')->default('awaiting_payment'); // awaiting_payment | paid | cancelled
             $table->unsignedBigInteger('price'); // minor units (cents), snapshot at order creation
             $table->char('currency', 3); // ISO 4217, lowercase as Stripe returns it (e.g. gbp)
-            // The single valid purchase payment. No FK constraint: payments references orders
-            // with cascadeOnDelete, and a reverse FK would make that cascade circular.
+            // The single winning payment. Its composite FK (same order only) is added in the
+            // payments migration, because the payments table doesn't exist yet.
             $table->uuid('paid_payment_id')->nullable()->unique();
             $table->string('cart_id')->index();
             $table->json('line_items');

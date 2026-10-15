@@ -4,6 +4,8 @@ Data model:
 ```mermaid
 erDiagram
     ORDER ||--o{ PAYMENT : "has attempts"
+    ORDER |o--o| PAYMENT : "paid by (paid_payment_id)"
+    PAYMENT ||--o{ REFUND : "has"
 
     ORDER {
         uuid id PK
@@ -11,7 +13,7 @@ erDiagram
         string status
         int price
         char currency
-        uuid paid_payment_id UK
+        uuid paid_payment_id FK, UK
         string cart_id
         json line_items
         timestamp created_at
@@ -44,7 +46,29 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
+
+    REFUND {
+        uuid id PK
+        uuid payment_id FK
+        string idempotency_key UK
+        string reason
+        int amount
+        char currency
+        string status
+        string stripe_refund_id UK
+        int attempts
+        text last_error
+        timestamp next_attempt_at
+        timestamp created_at
+        timestamp updated_at
+    }
 ```
+
+Key constraints:
+
+- `orders.paid_payment_id` has a composite FK `(orders.id, orders.paid_payment_id) → (payments.order_id, payments.id)`, so the winning payment must belong to the same order. The check is skipped while `paid_payment_id` is NULL.
+- `payments.order_id` and `refunds.payment_id` use restrict on delete. Payments and refunds are financial history: orders are cancelled, never deleted once they have payments.
+- Amounts are `unsigned bigint` minor units. Stripe's maximum charge is 99,999,999 minor units (£999,999.99); the application enforces its own lower maximum when an order is created.
 
 
 1. Can an order have multiple payment attempts, or exactly one payment?
@@ -70,10 +94,12 @@ A field can be immutable without being known up front. "Set once" means null →
 | `payments.stripe_session_id` | When the attempt is created (not null) | Never changes |
 | `payments.stripe_payment_intent_id` | Later, from a webhook (may not exist when the session is created) | Set once |
 | `orders.paid_payment_id` | When the order becomes `paid` | Set once |
+| `refunds.amount`, `refunds.currency`, `refunds.idempotency_key`, `refunds.reason` | When the refund is created | Never change |
+| `refunds.stripe_refund_id` | When Stripe accepts the refund | Set once |
 
 Where the amount is authoritative: the order's `price` + `currency` is the stable snapshot of what the customer owes. Each payment's `amount` + `currency` is what that Checkout Session was created to collect. On success, Stripe's `amount_total` and `currency` must match the payment row; a mismatch is flagged and never fulfils the order. Currency is always stored explicitly (lowercase ISO 4217, e.g. `gbp`), even though only GBP is supported.
 
-Enforced by a model `updating` hook that throws if any of these fields is changed to a different value once set.
+Enforced by a model `updating` hook that throws if any of these fields is changed to a different value once set. Set-once Stripe IDs are also written with a conditional update (`UPDATE ... SET stripe_payment_intent_id = ? WHERE id = ? AND (stripe_payment_intent_id IS NULL OR stripe_payment_intent_id = ?)`); zero affected rows means a conflicting ID and is flagged. The database's unique index stops one Stripe ID being attached to two rows. We don't add a DB trigger for set-once: the conditional update is the guarantee, and triggers would diverge between MySQL and the SQLite test database.
 
 
 5. What database constraints prevent duplicate Stripe events?
@@ -88,7 +114,9 @@ The controller only returns 200 after the event is durably stored:
 A scheduled recovery job (every minute) dispatches `received` events whose `next_attempt_at` is null or in the past and that are older than a few minutes. It is a safety net in case a job is lost, and keeps us safe if the queue moves off the database. Because an event may therefore be dispatched more than once, processing is idempotent: the job locks the event row, exits if its status is already final, and every domain transition is a conditional update (see Q6). A failing job never deletes or overwrites the stored event.
 
 6. Which payment statuses do you need, and which transitions are valid?
-Order, payment and webhook event each have their own status. An order describes what was bought; a payment describes one Checkout Session attempt; a webhook event describes our processing of one Stripe event. Any transition not listed below is invalid.
+Order, payment, refund and webhook event each have their own status. An order describes what was bought; a payment describes one Checkout Session attempt; a refund describes returning money for one payment; a webhook event describes our processing of one Stripe event. Any transition not listed below is invalid.
+
+"Payment succeeded" (Stripe collected the money), "order paid" (this payment is the order's winner) and "refund succeeded" (Stripe returned the money) are three separate facts, recorded in three separate places, and never collapsed into one status.
 
 **Order**
 
@@ -114,9 +142,23 @@ Order, payment and webhook event each have their own status. An order describes 
 1. `SELECT ... FOR UPDATE` the order.
 2. Move the payment `pending → succeeded` conditionally. If it is already `succeeded` (duplicate webhook), stop.
 3. If the order is `awaiting_payment` and `paid_payment_id` is null: set `paid_payment_id` to this payment and move the order to `paid`.
-4. Otherwise (the order is already paid by another attempt, or is `cancelled`): leave the order unchanged and send the payment to the refund path (see Invariant B in invariants.md).
+4. Otherwise (the order is already paid by another attempt, or is `cancelled`): leave the order unchanged and, **in this same transaction**, insert a `pending` refund for the full payment amount with `idempotency_key = auto:{payment_id}` and reason `duplicate_payment` or `order_cancelled`.
+5. Commit. Stripe is never called inside this transaction; the refund worker picks the refund up afterwards (Invariant E in invariants.md).
 
-Every handler that touches an order's payments (success, expiry, cancel, new attempt) locks the order row first, so they serialise and lock in the same order (no deadlocks).
+Every handler that touches an order's payments (success, expiry, cancel, new attempt) locks the order row first, so they serialise and lock in the same order (no deadlocks). This lock coordinates our own database only; it cannot stop Stripe collecting money on two sessions. It guarantees one winning payment and at most one fulfilment, and step 4 makes every extra success recoverable.
+
+**Refund** (one row per refund request)
+
+| From | To | Triggered by |
+|---|---|---|
+| `pending` | `pending` | Refund worker gets a temporary error from Stripe: `attempts + 1`, store `last_error`, set `next_attempt_at` with backoff |
+| `pending` | `submitted` | Refund worker: Stripe accepted the refund (stores `stripe_refund_id`) |
+| `pending` | `succeeded` | Refund worker: Stripe accepted and reports the refund already `succeeded` |
+| `pending` | `failed` | Refund worker: retries exhausted **and** a Stripe lookup confirms no refund exists for this row |
+| `submitted` | `succeeded` | `refund.updated` / `charge.refunded` webhook with refund status `succeeded` |
+| `submitted` | `failed` | `refund.updated` webhook with refund status `failed` or `canceled` |
+
+`succeeded` and `failed` are final; `failed` needs a human. `pending` and `submitted` still reserve their amount against the refund limit (Invariant A).
 
 **Webhook event**
 
