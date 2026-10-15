@@ -10,7 +10,7 @@ class Payment extends Model
 {
     use HasUuids;
 
-    protected $fillable = ['order_id', 'stripe_session_id', 'stripe_payment_intent_id', 'status', 'amount'];
+    protected $fillable = ['order_id', 'stripe_session_id', 'stripe_payment_intent_id', 'status', 'amount', 'currency'];
 
     protected function casts(): array
     {

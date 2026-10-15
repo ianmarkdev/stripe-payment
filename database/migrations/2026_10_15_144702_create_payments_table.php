@@ -17,7 +17,8 @@ return new class extends Migration
             $table->string('stripe_session_id')->unique(); // one row per Checkout Session attempt
             $table->string('stripe_payment_intent_id')->nullable()->unique();
             $table->string('status')->default('pending'); // pending | succeeded | failed | expired
-            $table->unsignedBigInteger('amount'); // minor units
+            $table->unsignedBigInteger('amount'); // minor units this attempt was created to collect
+            $table->char('currency', 3); // ISO 4217, lowercase
             $table->timestamps();
         });
     }

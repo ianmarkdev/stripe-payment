@@ -17,6 +17,7 @@ class ModelRelationshipsTest extends TestCase
         return Order::create(array_merge([
             'order_number' => 'ORD-'.uniqid(),
             'price' => 2500,
+            'currency' => 'gbp',
             'cart_id' => 'cart_123',
             'line_items' => [['sku' => 'ABC', 'qty' => 1, 'unit_price' => 2500]],
         ], $attributes));
@@ -27,6 +28,7 @@ class ModelRelationshipsTest extends TestCase
         return $order->payments()->create(array_merge([
             'stripe_session_id' => 'cs_test_'.uniqid(),
             'amount' => $order->price,
+            'currency' => $order->currency,
         ], $attributes));
     }
 

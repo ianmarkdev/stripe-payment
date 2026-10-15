@@ -10,7 +10,7 @@ class Order extends Model
 {
     use HasUuids;
 
-    protected $fillable = ['order_number', 'status', 'price', 'cart_id', 'line_items'];
+    protected $fillable = ['order_number', 'status', 'price', 'currency', 'paid_payment_id', 'cart_id', 'line_items'];
 
     protected function casts(): array
     {
