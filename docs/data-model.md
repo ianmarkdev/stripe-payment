@@ -127,20 +127,27 @@ Order, payment, refund and webhook event each have their own status. An order de
 
 `paid` and `cancelled` are final. A successful payment never moves a `cancelled` order to `paid`.
 
-**Payment** (one row per Checkout Session)
+**Payment** (one row per Checkout Session attempt)
 
-| From | To | Triggered by (Stripe event) |
+| From | To | Triggered by |
 |---|---|---|
-| `pending` | `succeeded` | `checkout.session.completed` with `payment_status = paid`, or `checkout.session.async_payment_succeeded` |
-| `pending` | `failed` | `checkout.session.async_payment_failed` |
+| `creating` | `pending` | Checkout Tx 2, or reconciliation, after Stripe created the session |
+| `creating` | `processing` / `succeeded` / `expired` | Webhook that arrives before Tx 2 (attaches `stripe_session_id`, then applies the event as below) |
+| `creating` | `abandoned` | Reconciliation: Stripe confirms no session was created |
+| `creating` | `needs_review` | Reconciliation can't establish whether a session exists |
+| `needs_review` | any status above | Manual resolution after checking Stripe |
+| `pending` | `succeeded` | `checkout.session.completed` with `payment_status = paid` |
+| `pending` | `processing` | `checkout.session.completed` with `payment_status = unpaid` (delayed payment method) |
 | `pending` | `expired` | `checkout.session.expired` |
+| `processing` | `succeeded` | `checkout.session.async_payment_succeeded` |
+| `processing` | `failed` | `checkout.session.async_payment_failed` |
 
-`succeeded`, `failed` and `expired` are final. `checkout.session.completed` with `payment_status = unpaid` (delayed payment methods) leaves the payment `pending`.
+`succeeded`, `failed`, `expired` and `abandoned` are final. `pending` means the session is open and the customer can still pay; `processing` means the session is complete and a delayed payment is settling. An attempt is *active* (blocks a new checkout) while it is `creating`, `pending`, `processing` or `needs_review`. See checkout-api.md for how the checkout endpoint and the webhook worker handle each other winning the `creating` race.
 
 **Applying a payment success** (one DB transaction, order row locked first):
 
 1. `SELECT ... FOR UPDATE` the order.
-2. Move the payment `pending → succeeded` conditionally. If it is already `succeeded` (duplicate webhook), stop.
+2. Move the payment to `succeeded` conditionally (from `creating`, `pending` or `processing`). If it is already `succeeded` (duplicate webhook), stop.
 3. If the order is `awaiting_payment` and `paid_payment_id` is null: set `paid_payment_id` to this payment and move the order to `paid`.
 4. Otherwise (the order is already paid by another attempt, or is `cancelled`): leave the order unchanged and, **in this same transaction**, insert a `pending` refund for the full payment amount with `idempotency_key = auto:{payment_id}` and reason `duplicate_payment` or `order_cancelled`.
 5. Commit. Stripe is never called inside this transaction; the refund worker picks the refund up afterwards (Invariant E in invariants.md).
